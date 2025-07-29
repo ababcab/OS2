@@ -73,9 +73,7 @@ uint64 sys_init_raid_5()
         disk_info[i].broken=0;
         
     }
-    block_offset = 1;
-    for(int i=0;i<PGSIZE;i++)
-        info[i]=0;
+/*
     int block=block_offset, diskn=VIRTIO_RAID_DISK_END;
     while(block<BLOCKS_IN_DISC)
     {
@@ -84,7 +82,10 @@ uint64 sys_init_raid_5()
         block++;
         diskn = ((diskn - 1 ) - 1 + VIRTIO_RAID_DISK_END) % VIRTIO_RAID_DISK_END + 1;
     }
+*/
     kfree(info);
+    block_offset = 1;
+    cleardisks();
     return 0;
 }
 

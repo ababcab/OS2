@@ -51,5 +51,5 @@ uint64 sys_destroy_raid(void);
 
 uint64 checkRAID_init( int wantInitializedRAID);
 uint64 checkRAID_disc(int wantOperational, int discn);
-
+uint64 cleardisks();
 #endif //OS2SYS_H

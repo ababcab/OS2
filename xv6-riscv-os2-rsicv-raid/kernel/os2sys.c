@@ -229,3 +229,16 @@ uint64 checkRAID_disc(int wantOperational, int discn)
         return -4;
     return 0;
 }
+
+uint64 cleardisks()
+{
+	uchar* zero = kalloc();
+	for(int i=0;i<PGSIZE;i++)
+		zero[i]=0;
+	for(int disk=VIRTIO_RAID_DISK_START;disk<=VIRTIO_RAID_DISK_END;disk++)
+		for(int i=block_offset;i<BLOCKS_IN_DISC;i++)
+		{
+			write_block(disk,i,zero);
+		}
+	kfree(zero);
+}

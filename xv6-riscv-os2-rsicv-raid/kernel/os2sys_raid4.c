@@ -16,15 +16,16 @@ uint64 sys_init_raid_4()
         disk_info[i].broken=0;
         
     }
-    block_offset = 1;
-    for(int i=0;i<PGSIZE;i++)
-        info[i]=0;
+    /*
     int parity=PARITY_DISK;
     for(int i=block_offset;i<BLOCKS_IN_DISC;i++)
     {
         write_block(parity,i,info);
     }
+    */
     kfree(info);
+    block_offset = 1;
+    cleardisks();
     return 0;
 }
 
