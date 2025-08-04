@@ -267,34 +267,46 @@ uint64 sys_disk_repaired_raid_5(int diskn)
     
     if(notWorking>1) // previse diskova ne radi
         return CANT_FIX_DISK;
-    uchar* block =(uchar*) kalloc();
+    uchar* buffer =(uchar*) kalloc();
     uchar* temp =(uchar*) kalloc();
-    int flush=1;
-    for(int i=0;i<BLOCKS_IN_DISC;i++)
+    int flush=1,fail=0;
+    for(int i=block_offset;i<BLOCKS_IN_DISC && !fail;i++)
     {
-        for(int curr=VIRTIO_RAID_DISK_START; curr<=VIRTIO_RAID_DISK_END;curr++)
+        acquiresleep(&os2_sleeplocks[OS2_ROWLOCK(buffer)]);
+        for(int curr=VIRTIO_RAID_DISK_START; curr<=VIRTIO_RAID_DISK_END && !fail;curr++)
         {
             if(diskn == curr)
                 continue;
             if(flush)
             {
-                read_block(curr,i,block);
+                fail = read_block_with_check(curr,i,buffer);
+
                 flush=0;
             }
             else
             {
-                read_block(curr,i,temp);
+                fail = read_block_with_check(curr,i,temp);
                 for(int j=0;j<BSIZE;j++)
                 {
-                    block[j]^=temp[j];
+                    buffer[j]^=temp[j];
                 }
             }
         }
-        write_block(diskn,i,block);
-        flush=1;
+        if(!fail)
+        {
+            fail = write_block_with_check(diskn,i,buffer);
+            flush=1;
+        }
+        releasesleep(&os2_sleeplocks[OS2_ROWLOCK(buffer)]);
     }
     kfree(temp);
-    kfree(block);
+    kfree(buffer);
+    if(fail)
+    {
+        disk_info[diskn].broken=1;
+        return CANT_FIX_DISK;
+    }
+    disk_info[diskn].broken=0;
     return 0;
 }
 

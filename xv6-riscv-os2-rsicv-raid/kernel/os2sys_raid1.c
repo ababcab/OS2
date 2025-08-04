@@ -95,22 +95,36 @@ uint64 sys_disk_repaired_raid_1(int diskn)
         return OUT_OF_DISK_RANGE;
     }
 
-    if(disk_info[diskn].broken)
+    
+    int partner_disk = PARTNER_DISK(diskn);
+    if(disk_info[partner_disk].broken)
     {
-        int partner_disk = PARTNER_DISK(diskn);
-        if(disk_info[partner_disk].broken)
-        {
-            return CANT_FIX_DISK; //both are beyond repair
-        }
-
-        uchar* block=(uchar*)kalloc();
-        for(int blockIndex =0; blockIndex < BLOCKS_IN_DISC;blockIndex++)
-        {
-            read_block(partner_disk,blockIndex,block);
-            write_block(diskn,blockIndex,block);
-        }
-        kfree(block);
+        return CANT_FIX_DISK; //both are beyond repair
     }
+
+    acquiresleep(&os2_sleeplocks[OS2_DISKLOCK(diskn)]);
+    acquiresleep(&os2_sleeplocks[OS2_DISKLOCK(partner_disk)]);
+    uchar* buffer = (uchar*)kalloc();
+    
+    int fail=0;
+    for(int i = 0; i < BLOCKS_IN_DISC && !fail; i++)
+    {
+        if(read_block_with_check(partner_disk,i,buffer))
+        {
+            fail=1;break;
+        }
+        fail = write_block_with_check(diskn,i,buffer);
+    }
+    kfree(buffer);
+    releasesleep(&os2_sleeplocks[OS2_DISKLOCK(partner_disk)]);
+    releasesleep(&os2_sleeplocks[OS2_DISKLOCK(diskn)]);
+    
+    if(fail)
+    {
+        disk_info[diskn].broken=1;
+        return CANT_FIX_DISK;
+    }
+    
     disk_info[diskn].broken=0;
     return 0;
 }

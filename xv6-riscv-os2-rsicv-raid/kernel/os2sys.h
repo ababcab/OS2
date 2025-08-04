@@ -52,4 +52,7 @@ uint64 sys_destroy_raid(void);
 uint64 checkRAID_init( int wantInitializedRAID);
 uint64 checkRAID_disc(int wantOperational, int discn);
 uint64 cleardisks();
+
+uint64 read_block_with_check(int diskn, int blockno, uchar* data);
+uint64 write_block_with_check(int diskn, int blockno, uchar* data);
 #endif //OS2SYS_H

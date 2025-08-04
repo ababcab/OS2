@@ -67,7 +67,6 @@ void init_disk_locks()
 	}
 }
 
-
 uint64 sys_init_raid(void)
 {
 
@@ -197,12 +196,15 @@ uint64 sys_info_raid(void)
 
 uint64 sys_destroy_raid(void)
 {
+	acquiresleep(&os2_sleeplocks[OS2_SLEEPLOCK_INIT]);
+
     if(currentRAID==-1)
-    return NOT_INIT;
+    	return NOT_INIT;
 
     arr_sys_destroy_raid[currentRAID]();
 
     currentRAID = -1;
+	releasesleep(&os2_sleeplocks[OS2_SLEEPLOCK_INIT]);
     return 0;
 }
 
@@ -241,4 +243,21 @@ uint64 cleardisks()
 			write_block(disk,i,zero);
 		}
 	kfree(zero);
+}
+
+
+
+uint64 read_block_with_check(int diskn, int blockno, uchar* data)
+{
+	if(disk_info[diskn].broken)
+		return 1;
+	read_block(diskn,blockno,data);
+	return 0;
+}
+uint64 write_block_with_check(int diskn, int blockno, uchar* data)
+{
+	if(disk_info[diskn].broken)
+		return 1;
+	write_block(diskn,blockno,data);
+	return 0;
 }

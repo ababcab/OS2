@@ -157,36 +157,46 @@ uint64 sys_disk_repaired_raid_4(int disk)
 
     int flush =1;
     //uchar* all_disks = kalloc_zero();
-    uchar* temp = kalloc();
     uchar* buffer = kalloc();
-
-    for(int block=block_offset;block<BLOCKS_IN_DISC;block++)
+    uchar* temp = kalloc();
+    int fail=0;
+    for(int i=block_offset;i<BLOCKS_IN_DISC && !fail;i++)
     {
-        for(int i=VIRTIO_RAID_DISK_START; i<=VIRTIO_RAID_DISK_END;i++)
+        acquiresleep(&os2_sleeplocks[OS2_ROWLOCK(i)]);
+        for(int i=VIRTIO_RAID_DISK_START; i<=VIRTIO_RAID_DISK_END && !fail;i++)
         {
             if(i==disk)
                 continue;
             if(flush)
             {
-                read_block(i,block,buffer);
+                fail = read_block_with_check(i,i,buffer);
                 flush=0;
-                continue;
             }
             else
-                read_block(i,block,temp);
-            for(int j=0;j<BSIZE; j++)
             {
-                buffer[j]^= temp[j];
+                fail = read_block_with_check(i,i,temp);
+                for(int j=0;j<BSIZE && !fail;j++)
+                {
+                    buffer[j]^= temp[j];
+                }
             }
-
         }
-        write_block(disk,block,buffer);
-        flush=1;
+        if(!fail)
+        {
+            fail = write_block_with_check(disk,i,buffer);
+            flush=1;    
+        }
+        releasesleep(&os2_sleeplocks[OS2_ROWLOCK(i)]);
     }
     
-    disk_info[disk].broken=0;
     kfree(buffer);
     kfree(temp);
+    if(fail)
+    {
+        disk_info[disk].broken=1;
+        return CANT_FIX_DISK;
+    }
+    disk_info[disk].broken=0;
     return 0;
 }
 

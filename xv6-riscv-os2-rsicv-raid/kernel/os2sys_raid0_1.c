@@ -7,6 +7,8 @@
 #define IN_DISK_RANGE(x) ( x>=VIRTIO_RAID_DISK_START && x<= USABLE_DISKS ? 1 : 0)
 #define PARTNER_DISK(x) (x > DISKS_PER_MIRROR ? x - DISKS_PER_MIRROR : x + DISKS_PER_MIRROR)
 
+static int broken_in_stripe[2]={0,0};
+
 uint64 sys_init_raid_0_1()
 {
     int mirror_offset = DISKS_PER_MIRROR;
@@ -18,16 +20,17 @@ uint64 sys_init_raid_0_1()
     for(int i=VIRTIO_RAID_DISK_START; i<=DISKS_PER_MIRROR;i++)
     {
         disk_info[i].broken=0;
-        disk_info[i].stripe=1;
+        disk_info[i].stripe=0;
         write_block(i,0,info);
 
         disk_info[i + mirror_offset].broken=0;
-        disk_info[i + mirror_offset].stripe=2;
+        disk_info[i + mirror_offset].stripe=1;
         write_block(i+mirror_offset,0,info);
     }
-
     kfree(info);
     block_offset = 1;
+    broken_in_stripe[0] =
+     broken_in_stripe[1] = 0;
     return 0;
 }
 
@@ -81,7 +84,7 @@ uint64 sys_write_raid_0_1(int block,uint64 bufferPA)
 uint64 sys_disk_fail_raid_0_1(int diskn)
 {
     disk_info[diskn].broken=1;
-    
+    broken_in_stripe[disk_info[diskn].stripe]++;
     return 0;
 }
 
@@ -95,13 +98,34 @@ uint64 sys_disk_repaired_raid_0_1(int diskn)
     if(disk_info[partner_disk].broken)
         return CANT_FIX_DISK;
 
+    
+    acquiresleep(&os2_sleeplocks[OS2_DISKLOCK(diskn)]);
+    acquiresleep(&os2_sleeplocks[OS2_DISKLOCK(partner_disk)]);
     uchar* buffer = kalloc();
-    for(int i=0; i< BLOCKS_IN_DISC;i++)
+
+    int fail=0;
+    for(int i=0; i< BLOCKS_IN_DISC && fail==0;i++)
     {
-        read_block(partner_disk,i,buffer);
-        write_block(diskn,i,buffer);
+        if(read_block_with_check(partner_disk,i,buffer)) 
+        {
+            fail=1;break;
+        }
+        fail = write_block_with_check(diskn,i,buffer);
     }
     kfree(buffer);
+    releasesleep(&os2_sleeplocks[OS2_DISKLOCK(partner_disk)]);
+    releasesleep(&os2_sleeplocks[OS2_DISKLOCK(diskn)]);
+    if(fail)
+    {
+        disk_info[diskn].broken=1;
+        return CANT_FIX_DISK;
+    }
+    else
+    {
+        disk_info[diskn].broken=0;
+        broken_in_stripe[disk_info[diskn].stripe]--;
+        return 0;
+    }
     return 0;
 }
 
