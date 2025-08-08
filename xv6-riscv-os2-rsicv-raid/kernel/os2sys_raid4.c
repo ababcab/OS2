@@ -16,13 +16,7 @@ uint64 sys_init_raid_4()
         disk_info[i].broken=0;
         
     }
-    /*
-    int parity=PARITY_DISK;
-    for(int i=block_offset;i<BLOCKS_IN_DISC;i++)
-    {
-        write_block(parity,i,info);
-    }
-    */
+    
     kfree(info);
     block_offset = 1;
     cleardisks();
@@ -46,18 +40,20 @@ uint64 sys_read_raid_4(int block,uint64 bufferPA)
         uchar* temp = kalloc();
         int flush=1;
         
+        acquiresleep(&os2_sleeplocks[OS2_ROWLOCK(block)]);
+
         for(int i=VIRTIO_RAID_DISK_START; i<=VIRTIO_RAID_DISK_END;i++)
         {
             if(i==disk)
                 continue;
-            if(disk_info[i].broken)
+            if(read_block_with_check(i,block,temp))
             {
-                printf("Disk %d status %d \n",disk,disk_info[disk].broken);
+                //printf("Disk %d status %d \n", disk, disk_info[disk].broken);
+                releasesleep(&os2_sleeplocks[OS2_ROWLOCK(block)]);
                 kfree(all_disks);
                 kfree(temp);
                 return BROKEN_DISK;
             }
-            read_block(i,block,temp);
             
             for(int j=0;j<BSIZE;j++)
             {
@@ -69,6 +65,7 @@ uint64 sys_read_raid_4(int block,uint64 bufferPA)
             flush=0;
         }
 
+        releasesleep(&os2_sleeplocks[OS2_ROWLOCK(block)]);
 
         for(int i=0;i<BSIZE;i++)
         {
@@ -98,34 +95,55 @@ uint64 sys_write_raid_4(int block,uint64 bufferPA)
 
     if(disk_info[disk].broken || disk_info[PARITY_DISK].broken)
     {
-        printf("RAID4\n\tDisk %d status %d | Parity %d status %d\n",disk,disk_info[disk].broken,PARITY_DISK,disk_info[PARITY_DISK].broken);
+        //printf("RAID4\n\tDisk %d status %d | Parity %d status %d\n",disk,disk_info[disk].broken,PARITY_DISK,disk_info[PARITY_DISK].broken);
         return BROKEN_DISK;
     }
+
+    acquiresleep(&os2_sleeplocks[OS2_ROWLOCK(block)]);
+    
+
     uchar* old = (uchar*) kalloc();
     uchar* parity = (uchar*) kalloc();
     uchar* new = (uchar*) bufferPA;
-
-    read_block(disk,block,old);
+    if( read_block_with_check(disk,block,old))
+    {
+        releasesleep(&os2_sleeplocks[OS2_ROWLOCK(block)]);
+        kfree(old);
+        kfree(parity);
+        return BROKEN_DISK;
+    }
 
     for(int i=0;i<BSIZE;i++)
     {
         old[i]    ^= new[i];
     }
     // sad je old ustvari change
-    write_block(disk,block,new);
-    read_block(PARITY_DISK,block,parity);
+    if(write_block_with_check(disk,block,new))
+    {
+        releasesleep(&os2_sleeplocks[OS2_ROWLOCK(block)]);
+        kfree(old);
+        kfree(parity);
+        return BROKEN_DISK;
+    }
+    if(read_block_with_check(PARITY_DISK,block,parity))
+    {
+        releasesleep(&os2_sleeplocks[OS2_ROWLOCK(block)]);
+        kfree(old);
+        kfree(parity);
+        return BROKEN_DISK;
+    }
     for(int i=0;i<BSIZE;i++)
     {
-        //if(i==0)
-          //  printf("old: %d\tdisk %d\n\tnew %d\n",parity[i],disk,parity[i]^old[i]);
+        //if(i==0) printf("old: %d\tdisk %d\n\tnew %d\n",parity[i],disk,parity[i]^old[i]);
         parity[i] ^= old[i];
     }
-    write_block(PARITY_DISK,block,parity);
+    int fail = write_block_with_check(PARITY_DISK,block,parity);
 
+    releasesleep(&os2_sleeplocks[OS2_ROWLOCK(block)]);
     kfree(old);
     kfree(parity);
 
-    return 0;
+    return fail ? BROKEN_DISK : 0;
 }
 
 
@@ -160,21 +178,21 @@ uint64 sys_disk_repaired_raid_4(int disk)
     uchar* buffer = kalloc();
     uchar* temp = kalloc();
     int fail=0;
-    for(int i=block_offset;i<BLOCKS_IN_DISC && !fail;i++)
+    for(int block=block_offset;block<BLOCKS_IN_DISC && !fail;block++)
     {
-        acquiresleep(&os2_sleeplocks[OS2_ROWLOCK(i)]);
+        acquiresleep(&os2_sleeplocks[OS2_ROWLOCK(block)]);
         for(int i=VIRTIO_RAID_DISK_START; i<=VIRTIO_RAID_DISK_END && !fail;i++)
         {
             if(i==disk)
                 continue;
             if(flush)
             {
-                fail = read_block_with_check(i,i,buffer);
+                fail = read_block_with_check(i,block,buffer);
                 flush=0;
             }
             else
             {
-                fail = read_block_with_check(i,i,temp);
+                fail = read_block_with_check(i,block,temp);
                 for(int j=0;j<BSIZE && !fail;j++)
                 {
                     buffer[j]^= temp[j];
@@ -183,10 +201,10 @@ uint64 sys_disk_repaired_raid_4(int disk)
         }
         if(!fail)
         {
-            fail = write_block_with_check(disk,i,buffer);
+            fail = write_block_with_check(disk,block,buffer);
             flush=1;    
         }
-        releasesleep(&os2_sleeplocks[OS2_ROWLOCK(i)]);
+        releasesleep(&os2_sleeplocks[OS2_ROWLOCK(block)]);
     }
     
     kfree(buffer);

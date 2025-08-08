@@ -32,51 +32,42 @@ uint64 sys_init_raid_1(void)
 
 uint64 sys_read_raid_1(int block,uint64 bufferPA)
 {
-    int diskn=1, blocksPerDisc = BLOCKS_IN_DISC - block_offset;
-    int usableDisks = USABLE_DISKS;
-    block+=block_offset;
-    while(block > BLOCKS_IN_DISC - block_offset && diskn <= usableDisks)
-    {
-        block-= blocksPerDisc;
-        diskn+=2;
-        block++;
-        //printf("loop in read raid1 %d %d %d\n",diskn, block, blocksPerDisc);
-    }
-    if(diskn > usableDisks)
-        return OUT_OF_BLOCK_RANGE;
-    if(disk_info[diskn].broken)
-        diskn++; // njegova kopija
-    if(disk_info[diskn].broken)
-        return BROKEN_DISK; // obe kopije ne funkcionisu
-    read_block(diskn,block,(uchar*)bufferPA);
+    //svaki disk: 1 (block_offset) + usable_blocks (BLOCKS_IN_DISC - blockoffset)
+    int userAvailableBlocks = BLOCKS_IN_DISC - block_offset;
+    int diskn = VIRTIO_RAID_DISK_START + 2 * block / (userAvailableBlocks);
+    block = block_offset + block % userAvailableBlocks;
 
-    return 0;
+    if(diskn > USABLE_DISKS)
+        return OUT_OF_BLOCK_RANGE;
+
+    int fail = read_block_with_check(diskn,block,(uchar*)bufferPA);
+    if(fail)  // ne treba da cita dva puta ako je prvi put uspeo
+        fail += read_block_with_check(PARTNER_DISK(diskn),block,(uchar*)bufferPA);
+    
+    return fail ? BROKEN_DISK : 0;
 }
 
 
 uint64 sys_write_raid_1(int block,uint64 bufferPA)
 {
-    int disc=1, blocksPerDisc = BLOCKS_IN_DISC - block_offset;
-    int usableDisks = USABLE_DISKS;
-    block+=block_offset;
-    while(block > BLOCKS_IN_DISC - block_offset && disc <= usableDisks)
-    {
-        block-= blocksPerDisc;
-        disc+=2;
-        block++;
-    }
-    if(disc > usableDisks)
+    //svaki disk: 1 (block_offset) + usable_blocks (BLOCKS_IN_DISC - blockoffset)
+    int userAvailableBlocks = BLOCKS_IN_DISC - block_offset;
+    int diskn = VIRTIO_RAID_DISK_START + 2 * block / (userAvailableBlocks);
+    block = block_offset + block % userAvailableBlocks;
+
+    if(diskn > USABLE_DISKS)
         return OUT_OF_BLOCK_RANGE; // block van opsega
-        
-    if(!disk_info[disc]      .broken)
-        write_block(disc,     block,(uchar*)bufferPA); //upisi u original
-    if(!disk_info[ disc + 1 ].broken)
-        write_block(disc + 1 ,block,(uchar*)bufferPA); //upisi u kopiju
+    
+    acquiresleep(&os2_sleeplocks[OS2_DISKLOCK(diskn)]);
+    acquiresleep(&os2_sleeplocks[OS2_DISKLOCK(PARTNER_DISK(diskn))]);
+    
+    int fail = write_block_with_check(diskn,block,(uchar*)bufferPA);
+    fail += write_block_with_check(PARTNER_DISK(diskn),block,(uchar*)bufferPA);
 
-    if(disk_info[disc].broken && disk_info[disc+1].broken) //oba su beyond repair
-        return BROKEN_DISK;
-
-    return 0;
+    releasesleep(&os2_sleeplocks[OS2_DISKLOCK(PARTNER_DISK(diskn))]);
+    releasesleep(&os2_sleeplocks[OS2_DISKLOCK(diskn)]);
+   
+    return fail==2 ? BROKEN_DISK : 0;
 }
 
 

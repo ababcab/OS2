@@ -12,8 +12,6 @@
 
 #define PARITY_BIG(x) ((x/(USABLE_DISKS*USABLE_DISKS - USABLE_DISKS)*USABLE_DISKS))
 #define X_MOD_DD_D(x) (x%(USABLE_DISKS*USABLE_DISKS - USABLE_DISKS))
-//#define PARITY_SMALL_ZERO
-//#define PARITY_SMALL(x) ((X_MOD_DD_D(x) == 0 || X_MOD_DD_D(x) == (USABLE_DISKS*USABLE_DISKS - USABLE_DISKS - 1))? 0 : (X_MOD_DD_D(x)-1)/(USABLE_DISKS-2))
 #define PARITY_SMALL(x) ((X_MOD_DD_D(x) == 0 ? 0 : ( X_MOD_DD_D(x) == (USABLE_DISKS*USABLE_DISKS - USABLE_DISKS - 1)) ? USABLE_DISKS :(X_MOD_DD_D(x)-1)/(USABLE_DISKS-2)))
 #define PPARITY(x) (PARITY_BIG(x) + PARITY_SMALL(x))
 
@@ -47,17 +45,21 @@ int faulty_block(int block_arg)
     return uslov;
 }
 
-
+/// @brief RAID5 index calculation
+/// @param block_arg logical block number
+/// @param r_ABN physical block number across all disks
+/// @param r_parity_disk_index index of disk that contains parity block for this row
+/// @param r_block_interact physical block number inside one disk (desired block)
+/// @param r_disk_interact index of desired block's disk
 void calc_indexes(int *block_arg, int *r_ABN, int *r_parity_disk_index, int *r_block_interact, int *r_disk_interact)
 {
     //printf("\nblock_arg: %d; BIG: %d; SMALL: %d\n",*block_arg,BIG_(*block_arg),CHECK_(*block_arg));
 
     *r_ABN = *block_arg + PPARITY(*block_arg);
-    //*r_ABN = *block_arg + PARITY_BLOCKS_PASSED(*block_arg);
 
     *r_block_interact = *r_ABN/USABLE_DISKS + block_offset;
     *r_disk_interact = *r_ABN % USABLE_DISKS + 1;
-    *r_parity_disk_index = USABLE_DISKS - (*r_block_interact-block_offset) % USABLE_DISKS;
+    *r_parity_disk_index = USABLE_DISKS - (*r_block_interact - block_offset) % USABLE_DISKS;
 }
 
 
@@ -73,16 +75,6 @@ uint64 sys_init_raid_5()
         disk_info[i].broken=0;
         
     }
-/*
-    int block=block_offset, diskn=VIRTIO_RAID_DISK_END;
-    while(block<BLOCKS_IN_DISC)
-    {
-        write_block(diskn,block,info);
-
-        block++;
-        diskn = ((diskn - 1 ) - 1 + VIRTIO_RAID_DISK_END) % VIRTIO_RAID_DISK_END + 1;
-    }
-*/
     kfree(info);
     block_offset = 1;
     cleardisks();
@@ -94,80 +86,51 @@ uint64 sys_init_raid_5()
 
 uint64 sys_read_raid_5(int block_arg,uint64 bufferPA)
 {
-    /**
-    // block je redni broj bloka ako gledamo samo blokove sa podacima
-    block += USABLE_DISKS;
-
-    //koliko treba da se preskoci parity blokova
-    int passed_parity_blocks = (block - USABLE_DISKS)/(USABLE_DISKS + 1) + 1;
-
-    //na kom je disku trazeni blok
-    int disk = (block + passed_parity_blocks) % USABLE_DISKS;
-
-    printf("\nRAID5: reading from disk %d\n", disk);
-
-    block = (block + passed_parity_blocks) / USABLE_DISKS;
-
-
-    */
-
-    /**
-    int actual_block_number = block_arg + block_arg/ USABLE_DISKS + 1;
-    int disk = actual_block_number % USABLE_DISKS + 1;
-    int block_to_interact_with = actual_block_number / USABLE_DISKS + block_offset;
-    */
-    //int disk_in_which_the_parity_block_is = (block_arg/ USABLE_DISKS) % USABLE_DISKS + 1;
-
     int actual_block_number,disk_in_which_the_parity_block_is,block_to_interact_with,disk;
     calc_indexes(&block_arg,&actual_block_number,&disk_in_which_the_parity_block_is,&block_to_interact_with,&disk);
 
 
     if(disk_info[disk].broken)
     {
+        acquiresleep(&os2_sleeplocks[OS2_ROWLOCK(block_to_interact_with)]);
         uchar* buffer = (uchar*)bufferPA;
         uchar* all_disks = kalloc();
         uchar* temp = kalloc();
         int flush=1;
-
-        for(int i=VIRTIO_RAID_DISK_START; i<=VIRTIO_RAID_DISK_END;i++)
+        int fail=0;
+        for(int i=VIRTIO_RAID_DISK_START; i<=VIRTIO_RAID_DISK_END && !fail;i++)
         {
             if(i==disk)
                 continue;
-            if(disk_info[i].broken)
-            {
-                kfree(all_disks);
-                kfree(temp);
-                return BROKEN_DISK;
-            }
             if(flush)
             {
-                read_block(i,block_to_interact_with,all_disks);
+                fail = read_block_with_check(i,block_to_interact_with,all_disks);
                 flush=0;
             }
             else
             {
-                read_block(i,block_to_interact_with,temp);
-                for(int i=0;i<BSIZE;i++)
-                {
-                    all_disks[i]^=temp[i];
-                }
+                fail = read_block_with_check(i,block_to_interact_with,temp);
+                if(!fail)
+                    for(int i=0;i<BSIZE;i++)
+                    {
+                        all_disks[i]^=temp[i];
+                    }
             }
         }
-
-
-        for(int i=0;i<BSIZE;i++)
-        {
-            buffer[i]=all_disks[i];
-        }
-
+        if (!fail)
+            for(int i=0;i<BSIZE;i++)
+            {
+                buffer[i]=all_disks[i];
+            }
+        
+        releasesleep(&os2_sleeplocks[OS2_ROWLOCK(block_to_interact_with)]);
         kfree(all_disks);
         kfree(temp);
-        return 0;
+        return fail ? BROKEN_DISK : 0;
     }
     else
     {
-        //int uslov = faulty_block(block_arg);
-        //if(uslov==0)  printf("RAID5: reading on disk %d on block: %d (ABN: %d,ABN-4: %d, block_arg : %d); parity is on disk: %d (block number of parity: %d)\n", disk,block_to_interact_with, actual_block_number + 4,actual_block_number,block_arg, disk_in_which_the_parity_block_is,block_to_interact_with*USABLE_DISKS+disk_in_which_the_parity_block_is-1-4);
+        //int uslov = faulty_block(block_arg); if(uslov==0)  printf("RAID5: reading on disk %d on block: %d (ABN: %d,ABN-4: %d, block_arg : %d); parity is on disk: %d (block number of parity: %d)\n", disk,block_to_interact_with, actual_block_number + 4,actual_block_number,block_arg, disk_in_which_the_parity_block_is,block_to_interact_with*USABLE_DISKS+disk_in_which_the_parity_block_is-1-4);
         
         read_block(disk,block_to_interact_with,(uchar*)bufferPA);
         return 0;
@@ -178,33 +141,6 @@ uint64 sys_read_raid_5(int block_arg,uint64 bufferPA)
 
 uint64 sys_write_raid_5(int block_arg,uint64 bufferPA)
 {
-    /** 
-    // block je redni broj bloka ako gledamo samo blokove sa podacima
-    block += USABLE_DISKS;
-
-    //koliko treba da se preskoci parity blokova
-    //int passed_parity_blocks = (block - USABLE_DISKS)/(USABLE_DISKS + 1) + 1;
-    
-    //na kom je disku trazeni blok
-    //int disk = (block + passed_parity_blocks) % USABLE_DISKS + 1;
-
-    int ABN= ((1+block -USABLE_DISKS)*(USABLE_DISKS+1)) / USABLE_DISKS;
-   // int passed_parity_blocks = ABN/(USABLE_DISKS +1) +1;    
-
-    int disk = (ABN) % USABLE_DISKS + 1;
-    //printf("\nRAID5: writing on disk %d\n", disk);
-
-    //int blockIndexWhole = block + passed_parity_blocks;
-
-    int blockIndexWhole= ABN + USABLE_DISKS;
-    //block = (block + passed_parity_blocks) / USABLE_DISKS;
-    block = (blockIndexWhole) / USABLE_DISKS;
-
-    int disk_in_which_the_parity_block_is = (block - 1) % USABLE_DISKS + 1;
-
-    printf("\nRAID5: writing on disk %d blockIndexWhole: %d; parity is on disk: %d\n", disk,blockIndexWhole, disk_in_which_the_parity_block_is);
-
-    */
     int actual_block_number,disk_in_which_the_parity_block_is,block_to_interact_with,disk;
     calc_indexes(&block_arg,&actual_block_number,&disk_in_which_the_parity_block_is,&block_to_interact_with,&disk);
 
@@ -214,29 +150,51 @@ uint64 sys_write_raid_5(int block_arg,uint64 bufferPA)
     {
         return BROKEN_DISK;
     }
+
+    acquiresleep(&os2_sleeplocks[OS2_ROWLOCK(block_to_interact_with)]);
+
     uchar* old = (uchar*) kalloc();
     uchar* parity = (uchar*) kalloc();
     uchar* new = (uchar*) bufferPA;
 
-    read_block(disk, block_to_interact_with,old);
+    if(read_block_with_check(disk, block_to_interact_with,old))
+    {
+        releasesleep(&os2_sleeplocks[OS2_ROWLOCK(block_to_interact_with)]);
+        kfree(old);
+        kfree(parity);
+        return BROKEN_DISK;
+    }
 
     for(int i=0;i<BSIZE;i++)
     {
         old[i]    ^= new[i];
     }
     // sad je old ustvari change
-    write_block(disk, block_to_interact_with,new);
-    read_block(disk_in_which_the_parity_block_is, block_to_interact_with,parity);
+    if( write_block_with_check(disk, block_to_interact_with,new))
+    {
+        releasesleep(&os2_sleeplocks[OS2_ROWLOCK(block_to_interact_with)]);
+        kfree(old);
+        kfree(parity);
+        return BROKEN_DISK;
+    }
+    if(read_block_with_check(disk_in_which_the_parity_block_is, block_to_interact_with,parity))
+    {
+        releasesleep(&os2_sleeplocks[OS2_ROWLOCK(block_to_interact_with)]);
+        kfree(old);
+        kfree(parity);
+        return BROKEN_DISK;
+    }
     for(int i=0;i<BSIZE;i++)
     {
         parity[i] ^= old[i];
     }
-    write_block(disk_in_which_the_parity_block_is, block_to_interact_with,parity);
+    int fail = write_block_with_check(disk_in_which_the_parity_block_is, block_to_interact_with,parity);
 
+    releasesleep(&os2_sleeplocks[OS2_ROWLOCK(block_to_interact_with)]);
     kfree(old);
     kfree(parity);
 
-    return 0;
+    return fail ? BROKEN_DISK : 0;
 }
 
 
@@ -280,7 +238,6 @@ uint64 sys_disk_repaired_raid_5(int diskn)
             if(flush)
             {
                 fail = read_block_with_check(curr,i,buffer);
-
                 flush=0;
             }
             else

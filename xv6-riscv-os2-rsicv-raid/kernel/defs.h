@@ -207,8 +207,9 @@ void            read_block(int diskn, int blockno, uchar* data);
 #define BLOCKS_IN_DISC (DISK_SIZE / BSIZE)
 
 
-#define OS2_SPINLOCK_COUNT (1)
+#define OS2_SPINLOCK_COUNT (2)
 #define OS2_SPINLOCK_INIT (0)
+#define OS2_STRIPEFAIL_LOCK (1)
 
 
 #define OS2_SLEEPLOCK_COUNT (1 + VIRTIO_RAID_DISK_END + BLOCKS_IN_DISC)

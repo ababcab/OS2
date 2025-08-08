@@ -35,10 +35,9 @@ uint64 sys_read_raid_0(int block,uint64 bufferPA)//buffer)
 		return BROKEN_DISK;
 
 //  printf("\nCitanje sa diska %d blok %d %d\n", disc,blockIndex,block);
-	read_block(disk,blockIndex,(uchar*)bufferPA);
+    int fail = read_block_with_check(disk,blockIndex,(uchar*)bufferPA);
 
-	return 0;
-
+	return fail ? BROKEN_DISK : 0;
 }
 
 
@@ -52,9 +51,9 @@ uint64 sys_write_raid_0(int block,uint64 bufferPA)//bufferVA)
 	if(disk_info[disk].broken)
 		return BROKEN_DISK;
 
-    write_block(disk,blockIndex,(uchar*)bufferPA);
-
-    return 0;
+    int fail = write_block_with_check(disk,blockIndex,(uchar*)bufferPA);
+    
+	return fail ? BROKEN_DISK : 0;
 }
 
 uint64 sys_disk_fail_raid_0(int diskn)

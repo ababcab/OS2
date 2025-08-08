@@ -37,54 +37,67 @@ uint64 sys_init_raid_0_1()
 uint64 sys_read_raid_0_1(int block,uint64 bufferPA)
 {
     block += DISKS_PER_MIRROR;
-    int disk = block % DISKS_PER_MIRROR + 1;
+    int diskn = block % DISKS_PER_MIRROR + 1;
     block = block / DISKS_PER_MIRROR;
-        
-    if(disk_info[disk].broken)
+    
+    int failedDisksInStripe = disk_info[diskn].stripe;
+
+    if(failedDisksInStripe > 0)
     {
-        disk = PARTNER_DISK(disk);
+        diskn = PARTNER_DISK(diskn);
+        failedDisksInStripe = disk_info[diskn].stripe;
+        if(failedDisksInStripe > 0)
+        {
+            return BROKEN_DISK; // both stripes dont work
+        }
     }
 
-    if(disk_info[disk].broken)
-    {
-        return BROKEN_DISK; // both stripes dont work
-    }
+    int fail = read_block_with_check(diskn,block,(uchar*)bufferPA);
 
-    //printf("RAID0_1: reading on disk %d on block: %d (#block_on_disk: %d)\n", disk,block-1, block);
-    read_block(disk,block,(uchar*)bufferPA);
-
-    return 0;
+    return fail ? BROKEN_DISK : 0;
 }
 
 uint64 sys_write_raid_0_1(int block,uint64 bufferPA)
 {
     block += DISKS_PER_MIRROR;
-    int disk = block % DISKS_PER_MIRROR + 1;
+    int diskn = block % DISKS_PER_MIRROR + 1;
     block = block / DISKS_PER_MIRROR;
+    
+    int failedDisksInStripe = disk_info[diskn].stripe;
 
-    int partner_disk = PARTNER_DISK(disk);
-    if(disk_info[disk].broken && disk_info[partner_disk].broken)
+    int partner_disk = PARTNER_DISK(diskn);
+    int failedDisksInPartnerStripe = disk_info[partner_disk].stripe;
+
+    if(failedDisksInStripe > 0 && failedDisksInPartnerStripe > 0)
     {
-        return BROKEN_DISK; // both stripes dont work
+        return BROKEN_DISK;
     }
     
-    if(disk_info[disk].broken == 0)
+    
+    int fail=0;
+    acquiresleep(&os2_sleeplocks[OS2_DISKLOCK(diskn)]);
+    acquiresleep(&os2_sleeplocks[OS2_DISKLOCK(partner_disk)]);
+    if(failedDisksInStripe > 0)
     {
-        write_block(disk,block,(uchar*)bufferPA);
+        fail += write_block_with_check(diskn,block,(uchar*)bufferPA);
     }
-    if(disk_info[partner_disk].broken == 0)
+    if(failedDisksInPartnerStripe > 0)
     {
-        write_block(partner_disk,block,(uchar*)bufferPA);
+        fail += write_block_with_check(partner_disk,block,(uchar*)bufferPA);
     }
+    releasesleep(&os2_sleeplocks[OS2_DISKLOCK(partner_disk)]);
+    releasesleep(&os2_sleeplocks[OS2_DISKLOCK(diskn)]);
 
 
-    return 0;
+    return fail == 2 ? BROKEN_DISK : 0;
 }
 
 uint64 sys_disk_fail_raid_0_1(int diskn)
 {
     disk_info[diskn].broken=1;
+    acquire(&os2_spinlocks[OS2_STRIPEFAIL_LOCK]);
     broken_in_stripe[disk_info[diskn].stripe]++;
+    release(&os2_spinlocks[OS2_STRIPEFAIL_LOCK]);
     return 0;
 }
 
@@ -123,7 +136,9 @@ uint64 sys_disk_repaired_raid_0_1(int diskn)
     else
     {
         disk_info[diskn].broken=0;
+        acquire(&os2_spinlocks[OS2_STRIPEFAIL_LOCK]);
         broken_in_stripe[disk_info[diskn].stripe]--;
+        release(&os2_spinlocks[OS2_STRIPEFAIL_LOCK]);
         return 0;
     }
     return 0;
